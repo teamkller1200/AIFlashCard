@@ -12,7 +12,11 @@ export default function Home() {
 	const [cardCount, setCardCount] = useState(DEFAULT_CARD_COUNT);
 
 	const canSubmit =
-		text.trim().length > 0 && text.length <= MAX_INPUT_LENGTH && !isLoading;
+		text.trim().length > 0 &&
+		text.length <= MAX_INPUT_LENGTH &&
+		cardCount >= MIN_CARD_COUNT &&
+		cardCount <= MAX_CARD_COUNT &&
+		!isLoading;
 
 	const handleSubmit = async () => {
 		if (!canSubmit) return;
@@ -88,22 +92,22 @@ export default function Home() {
 							className="flex items-center gap-2 text-xs text-zinc-600"
 						>
 							生成枚数
-							<select
+							<input
+								type="number"
 								id="count"
 								value={cardCount}
-								onChange={(e) => setCardCount(Number(e.target.value))}
+								onChange={(e) =>
+									setCardCount(
+										e.target.value === ""
+											? 0
+											: Number(e.target.value)
+									)
+								}
+								min={MIN_CARD_COUNT}
+								max={MAX_CARD_COUNT}
 								disabled={isLoading}
-								className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
-							>
-								{Array.from(
-									{ length: MAX_CARD_COUNT - MIN_CARD_COUNT + 1 },
-									(_, i) => MIN_CARD_COUNT + i
-								).map((n) => (
-									<option key={n} value={n}>
-										{n}件
-									</option>
-								))}
-							</select>
+								className="w-20 rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
+							/>
 						</label>
 					</div>
 					<button
@@ -112,7 +116,14 @@ export default function Home() {
 						onClick={handleSubmit}
 						className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-indigo-600 px-6 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-zinc-300 disabled:text-zinc-500"
 					>
-						{isLoading ? "生成中..." : "カード生成"}
+						{isLoading ? (
+						<>
+							<span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+							生成中...
+						</>
+					) : (
+						"カード生成"
+					)}
 					</button>
 				</div>
 			</section>
