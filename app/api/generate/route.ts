@@ -1,58 +1,55 @@
-import OpenAI from "openai";
-import { zodResponseFormat } from "openai/helpers/zod";
+import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import {
-	FlashCardResponseSchema,
-	MAX_INPUT_LENGTH,
-	DEFAULT_CARD_COUNT,
-} from "@/lib/schemas";
-import NextNodeServer from "next/dist/server/next-server";
+import { FlashCardResponseSchema, MAX_INPUT_LENGTH, DEFAULT_CARD_COUNT, MIN_CARD_COUNT, MAX_CARD_COUNT } from "@/lib/schemas";
 
 export const runtime = "nodejs";
 
-//OpenAIクライアントの初期化
-const client = new OpenAI();
+// Gemini クライアントの初期化
+const client = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
 
-//受け取るリクエストの形式をZodで定義
+// 受け取るリクエストの形式を Zod で定義
 const GenerateRequestSchema = z.object({
 	text: z.string().min(1).max(MAX_INPUT_LENGTH),
+	count: z
+		.number()
+		.int()
+		.min(MIN_CARD_COUNT)
+		.max(MAX_CARD_COUNT)
+		.default(DEFAULT_CARD_COUNT),
 });
 
-//OpenAI APIエラー処理
-function handleOpenAIError(error: unknown): NextResponse {
-	if (error instanceof OpenAI.APIError) {
-		const status = error.status;
-		let message = "OpenAI APIでエラーが発生しました";
-
-		if (status === 401) {
-			message = "APIキーが無効です";
-		} else if (status === 429) {
-			message = "リクエストが多すぎます";
-		} else if (status === 400) {
-			message = "リクエスト内容が正しくありません";
-		} else if (status && status >= 500) {
-			message = "OpenAI側で障害が発生しています";
-		}
-
-		return NextResponse.json({ error: message }, { status: status ?? 500 });
-	}
-
-	if (error instanceof OpenAI.APIConnectionTimeoutError) {
-		return NextResponse.json(
-			{ error: "タイムアウト" },
-			{ status: 504 }
-		);
-	}
-
-	return NextResponse.json(
-		{ error: "サーバーエラー" },
-		{ status: 500 }
-	);
+// エラーハンドリング
+function handleApiError(error: unknown): NextResponse {
+	const message =
+		error instanceof Error ? error.message : "サーバーエラーが発生しました";
+	return NextResponse.json({ error: message }, { status: 500 });
 }
 
+// Gemini API の Structured Outputs に渡す JSON Schema（手動定義）
+const flashCardResponseJsonSchema = {
+	type: "object",
+	properties: {
+		cards: {
+			type: "array",
+			items: {
+				type: "object",
+				properties: {
+					id: { type: "number" },
+					question: { type: "string" },
+					answer: { type: "string" },
+				},
+				required: ["id", "question", "answer"],
+				propertyOrdering: ["id", "question", "answer"],
+			},
+		},
+	},
+	required: ["cards"],
+	propertyOrdering: ["cards"],
+};
+
 export async function POST(req: Request) {
-	//リクエストボディをjsonにパース
+	// リクエストボディを JSON にパース
 	let body: unknown;
 	try {
 		body = await req.json();
@@ -62,49 +59,48 @@ export async function POST(req: Request) {
 			{ status: 400 }
 		);
 	}
-	//リクエストをZodで検証
 	const parsed = GenerateRequestSchema.safeParse(body);
 	if (!parsed.success) {
 		return NextResponse.json(
-			{ error: "入力テキストは１～${MAX_INPUT_LENGTH}文字で入力してください" },
+			{ error: `入力テキストは１～${MAX_INPUT_LENGTH}文字で入力してください` },
 			{ status: 400 }
 		);
 	}
 
 	try {
-		//OpenAi APIへリクエスト
-		const completion = await client.chat.completions.parse({
-			model: process.env.OPENAI_MODEL ?? "gpt-4o",
-			messages: [
+		// Gemini API へリクエスト（Structured Outputs を使用）
+
+		const response = await client.models.generateContent({
+			model: process.env.GEMINI_MODEL ?? "gemini-2.0-flash",
+			contents: [
 				{
-					role: "system",
-					content: [
-						`あなたは学習用のフラッシュカードを作成するアシスタントです。`,
-						`ユーザーが入力した学習資料から、一問一答形式のカードを${DEFAULT_CARD_COUNT}件生成してください。`,
-						`質問は学習内容の要点を確認できるものにし、回答は簡潔かつ正確にしてください。`,
-						`出力は必ず定義されたJSONスキーマに従ってください。`,
-					].join("\n"),
+					role: "user",
+					parts: [
+						{
+							text: [
+								"あなたは学習用のフラッシュカードを作成するアシスタントです。",
+								`ユーザーが入力した学習資料から、一問一答形式のカードを${parsed.data.count}件生成してください。`,
+								"質問は学習内容の要点を確認できるものにし、回答は簡潔かつ正確にしてください。",
+								"出力は必ず定義されたJSONスキーマに従ってください。",
+								"",
+								"### 学習資料",
+								parsed.data.text,
+							].join("\n"),
+						},
+					],
 				},
-				{ role: "user", content: parsed.data.text },
 			],
-			response_format: zodResponseFormat(
-				FlashCardResponseSchema,
-				"flash_cards"
-			),
+			config: {
+				responseMimeType: "application/json",
+				responseJsonSchema: flashCardResponseJsonSchema,
+			},
 		});
 
-		const generated = completion.choices[0]?.message?.parsed;
+		const raw = JSON.parse(response.text ?? "{}");
 
-		//レスポンスの検証
-		if(!generated) {
-			return NextResponse.json(
-				{ error: "カードを生成できませんでした" },
-				{ status:500 }
-			);
-		}
-
-		const validated = FlashCardResponseSchema.safeParse(generated);
-		if(!validated.success) {
+		// レスポンスの検証
+		const validated = FlashCardResponseSchema.safeParse(raw);
+		if (!validated.success) {
 			return NextResponse.json(
 				{ error: "生成されたデータが不正でした" },
 				{ status: 502 }
@@ -113,6 +109,6 @@ export async function POST(req: Request) {
 
 		return NextResponse.json(validated.data);
 	} catch (error) {
-		return handleOpenAIError(error);
+		return handleApiError(error);
 	}
 }

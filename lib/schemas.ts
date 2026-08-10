@@ -19,3 +19,5 @@ export type FlashCardRespone = z.infer<typeof FlashCardResponseSchema>;
 //定数
 export const MAX_INPUT_LENGTH = 4000;
 export const DEFAULT_CARD_COUNT = 3;
+export const MIN_CARD_COUNT = 1;
+export const MAX_CARD_COUNT = 10;
